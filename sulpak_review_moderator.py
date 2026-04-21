@@ -141,8 +141,17 @@ class Review:
     link_cms: str = ""
     link_publish: str = ""       # "Отображать на сайте"
     link_cms_media: str = ""
+    media_urls: list = None      # Прямые URL на медиафайлы (jpeg/png/mp4)
     email_id: str = ""
     email_date: str = ""
+
+    def __post_init__(self):
+        if self.media_urls is None:
+            self.media_urls = []
+
+    @property
+    def has_media(self) -> bool:
+        return bool(self.media_urls) or self.media.strip().upper() in ("ДА", "YES", "TRUE")
 
 # ============================================================
 # ПОДКЛЮЧЕНИЕ К EXCHANGE
@@ -208,12 +217,15 @@ def parse_review_email(item) -> Review:
                 review.text = value
             elif "номер телефона" in label:
                 review.phone = value
-            elif "медіа" in label or "медиа" in label:
+            elif "медіа файли" in label or "медиа файли" in label:
                 review.media = value
             elif "источник" in label:
                 review.source = value
 
     # Парсим ссылки
+    import re
+    media_link_re = re.compile(r"^(медиа|медіа)\s*\d+$", re.IGNORECASE)
+
     links = soup.find_all("a")
     for link in links:
         href = link.get("href", "")
@@ -225,8 +237,12 @@ def parse_review_email(item) -> Review:
             review.link_cms = href
         elif "отображать на сайте" in text:
             review.link_publish = href
-        elif "показать в cms медиа" in text:
+        elif "показать в cms медиа" in text or "показать в cms медіа" in text:
             review.link_cms_media = href
+        elif media_link_re.match(text) and href:
+            # Ссылки "Медиа 1", "Медиа 2" и т.д. — прямые URL на файлы
+            if href not in review.media_urls:
+                review.media_urls.append(href)
 
     # Метаданные письма
     review.email_id = str(item.id) if item.id else ""
@@ -288,6 +304,122 @@ def _error_result(reason: str, flags: list) -> dict:
     }
 
 # ============================================================
+# VISION: ПРОВЕРКА МЕДИА
+# ============================================================
+
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+VISION_SYSTEM_PROMPT = """Ты — модератор медиа-контента к отзывам на товары Sulpak (Казахстан).
+На вход: текст отзыва, URL страницы товара, фото от покупателя.
+
+Задача — оценить, уместны ли фото для публикации.
+
+ОДОБРИТЬ (approve):
+- На фото действительно тот товар, о котором отзыв (в использовании, распакован, упаковка)
+- Фото чёткие, контент цивильный
+
+ОТКЛОНИТЬ (reject):
+- Нет товара — случайные объекты (животные, пейзажи, еда без товара)
+- Скриншоты чатов/чеков/паспортов — персональные данные
+- Непристойный / шокирующий контент
+- Реклама сторонних магазинов / логотипы конкурентов
+- Фото явно другого товара
+
+MANUAL_REVIEW:
+- Товар может быть, но уверенности нет
+- Виден брак/дефект
+- Фото не открывается
+
+Формат ответа — строго JSON без markdown:
+{
+  "decision": "approve" | "reject" | "manual_review",
+  "confidence": 0.0-1.0,
+  "reason": "краткое пояснение на русском",
+  "per_image": [
+    {"index": 1, "verdict": "ok" | "not_product" | "personal_data" | "other", "note": "что видно"}
+  ]
+}"""
+
+
+def _is_supported_image(url: str) -> bool:
+    from urllib.parse import urlparse
+    return urlparse(url).path.lower().endswith(IMAGE_EXTS)
+
+
+def moderate_media(review: Review) -> dict:
+    """Проверяет фото отзыва через Claude vision. Возвращает vision-вердикт.
+
+    Результат НЕ влияет на публикацию текста — только аннотирует письмо и jsonl.
+    """
+    image_urls = [u for u in review.media_urls if _is_supported_image(u)]
+    skipped = [u for u in review.media_urls if not _is_supported_image(u)]
+
+    if not image_urls:
+        return {
+            "decision": "manual_review",
+            "confidence": 0.0,
+            "reason": "нет поддерживаемых картинок (видео/сторонние ссылки)",
+            "per_image": [],
+            "skipped_urls": skipped,
+            "checked_count": 0,
+        }
+
+    # Claude Sonnet 4 принимает до 20 картинок на сообщение
+    image_urls = image_urls[:20]
+
+    content = [
+        {"type": "text", "text": f"URL страницы товара: {review.link_product or 'неизвестно'}"},
+        {"type": "text", "text": (
+            f"Текст отзыва:\n"
+            f"Оценка: {review.rating}\n"
+            f"Плюсы: {review.pros}\n"
+            f"Минусы: {review.cons}\n"
+            f"Текст: {review.text}"
+        )},
+        {"type": "text", "text": f"К отзыву приложено {len(image_urls)} фото:"},
+    ]
+    for url in image_urls:
+        content.append({"type": "image", "source": {"type": "url", "url": url}})
+
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=800,
+            system=VISION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+        result = json.loads(text)
+        result["checked_count"] = len(image_urls)
+        result["skipped_urls"] = skipped
+        return result
+
+    except json.JSONDecodeError as e:
+        log.error(f"Vision: ошибка парсинга JSON: {e}")
+        return {
+            "decision": "manual_review",
+            "confidence": 0.0,
+            "reason": f"парсинг JSON упал: {e}",
+            "per_image": [],
+            "skipped_urls": skipped,
+            "checked_count": len(image_urls),
+        }
+    except Exception as e:
+        log.error(f"Vision: ошибка API: {e}")
+        return {
+            "decision": "manual_review",
+            "confidence": 0.0,
+            "reason": f"ошибка API: {e}",
+            "per_image": [],
+            "skipped_urls": skipped,
+            "checked_count": len(image_urls),
+        }
+
+# ============================================================
 # ПУБЛИКАЦИЯ ОТЗЫВА
 # ============================================================
 
@@ -313,7 +445,7 @@ def publish_review(review: Review) -> bool:
 # ЛОГИРОВАНИЕ РЕЗУЛЬТАТОВ
 # ============================================================
 
-def log_result(review: Review, moderation: dict, published: bool):
+def log_result(review: Review, moderation: dict, published: bool, vision: dict = None):
     """Записывает результат в JSONL-файл."""
     record = {
         "timestamp": datetime.now().isoformat(),
@@ -328,6 +460,10 @@ def log_result(review: Review, moderation: dict, published: bool):
         "flags": moderation.get("flags"),
         "published": published,
         "auto_mode": AUTO_PUBLISH,
+        "has_media": review.has_media,
+        "media_count": len(review.media_urls),
+        "media_urls": review.media_urls,
+        "vision": vision,   # None, если не проверяли; иначе {decision, confidence, reason, per_image, ...}
         "link_publish": review.link_publish,
         "link_product": review.link_product
     }
@@ -339,13 +475,44 @@ def log_result(review: Review, moderation: dict, published: bool):
 # ПОМЕТКА ПИСЬМА В EXCHANGE
 # ============================================================
 
-def mark_email(item, moderation: dict):
-    """Помечает письмо в Exchange в зависимости от решения."""
+def _vision_category_suffix(vision: dict) -> str:
+    """Строит суффикс категории с vision-вердиктом для модератора."""
+    v_decision = vision.get("decision", "manual_review")
+    v_conf = vision.get("confidence", 0.0)
+    pct = int(round(v_conf * 100))
+    mark = {
+        "approve": f"📷 фото ок {pct}%",
+        "reject": f"📷 фото ❌ {pct}%",
+        "manual_review": f"📷 фото ⚠️ {pct}%",
+    }.get(v_decision, f"📷 фото ? {pct}%")
+    return mark
+
+
+def mark_email(item, moderation: dict, has_media: bool = False,
+               published: bool = False, vision: dict = None):
+    """Помечает письмо в Exchange в зависимости от решения.
+
+    has_media — к отзыву приложены фото/видео.
+    published — отзыв автопубликован скриптом.
+    vision — vision-вердикт по медиа (может быть None, если не вызывался).
+    """
     decision = moderation.get("decision", "manual_review")
 
     if decision == "approve":
         item.is_read = True
-        item.categories = ["✅ Одобрено ИИ"]
+        base = "✅ Опубликовано ИИ" if published else "✅ Одобрено ИИ"
+        if vision is not None:
+            suffix = _vision_category_suffix(vision)
+            # Если vision сказал reject — поднимаем флаг для ручной чистки медиа в CMS
+            if vision.get("decision") == "reject":
+                item.is_read = False
+                item.categories = [f"{base} | {suffix}"]
+                item.importance = "High"
+                item.save(update_fields=["is_read", "categories", "importance"])
+                return
+            item.categories = [f"{base} | {suffix}"]
+        else:
+            item.categories = [base]
         item.save(update_fields=["is_read", "categories"])
 
     elif decision == "reject":
@@ -444,31 +611,43 @@ def process_new_reviews():
 
             log.info(f"Решение: {decision} (confidence={confidence:.2f})")
             log.info(f"Причина: {reason}")
+            if review.has_media:
+                log.info(f"📷 Приложено медиа: {len(review.media_urls)} шт.")
 
             # Действие
             published = False
+            vision_result = None
 
             if AUTO_PUBLISH:
                 if decision == "approve" and confidence >= CONFIDENCE_THRESHOLD:
+                    # Публикуем текст в любом случае — прошёл текстовую проверку
                     published = publish_review(review)
-                    mark_email(item, moderation)
-                    # move_to_folder(account, item, "Одобрено")
+
+                    # При наличии медиа — vision-аннотация (без публикации медиа)
+                    if review.has_media and published:
+                        log.info("📷 Запускаю vision-проверку медиа...")
+                        vision_result = moderate_media(review)
+                        v_dec = vision_result.get("decision")
+                        v_conf = vision_result.get("confidence", 0.0)
+                        log.info(f"📷 Vision: {v_dec} (confidence={v_conf:.2f})")
+                        log.info(f"📷 Причина: {vision_result.get('reason', '')}")
+
+                    mark_email(item, moderation, has_media=review.has_media,
+                               published=published, vision=vision_result)
                 elif decision == "reject":
                     log.info(f"❌ Отклонён: {reason}")
-                    mark_email(item, moderation)
-                    # move_to_folder(account, item, "Отклонено")
+                    mark_email(item, moderation, has_media=review.has_media, published=False)
                 else:
                     log.info(f"⚠️ На ручную проверку: {reason}")
-                    mark_email(item, moderation)
-                    # move_to_folder(account, item, "На проверку")
+                    mark_email(item, moderation, has_media=review.has_media, published=False)
             else:
                 # Режим помощника — помечаем категорией, не публикуем
                 emoji = {"approve": "✅", "reject": "❌", "manual_review": "⚠️"}
                 log.info(f"{emoji.get(decision, '?')} Рекомендация: {decision}")
-                mark_email(item, moderation)
+                mark_email(item, moderation, has_media=review.has_media, published=False)
 
             # Логируем результат
-            log_result(review, moderation, published)
+            log_result(review, moderation, published, vision=vision_result)
             processed += 1
 
         return processed
