@@ -68,8 +68,22 @@ def build_html_report(records: list, date_str: str) -> str:
         for r in records if r.get("decision") == "reject"
     )
 
-    # Считаем опубликованные
+    # Считаем опубликованные — разбивка по наличию медиа
     published_count = sum(1 for r in records if r.get("published"))
+    published_no_media = sum(1 for r in records if r.get("published") and not r.get("has_media"))
+    published_with_media = sum(1 for r in records if r.get("published") and r.get("has_media"))
+
+    # Статистика по медиа и vision
+    media_records = [r for r in records if r.get("has_media")]
+    media_total = len(media_records)
+
+    vision_records = [r for r in records if r.get("vision") is not None]
+    vision_decisions = Counter(
+        (r.get("vision") or {}).get("decision") for r in vision_records
+    )
+    vision_approve = vision_decisions.get("approve", 0)
+    vision_reject = vision_decisions.get("reject", 0)
+    vision_manual = vision_decisions.get("manual_review", 0)
 
     # Средний confidence
     confidences = [r.get("confidence", 0) for r in records if r.get("confidence")]
@@ -127,8 +141,72 @@ def build_html_report(records: list, date_str: str) -> str:
             </table>
         </div>
 
-        <p>Опубликовано автоматически: <b>{published_count}</b> | Средний confidence: <b>{avg_confidence:.2f}</b></p>
+        <p>
+            📤 Опубликовано автоматически: <b>{published_count}</b>
+            (без медиа: {published_no_media}, с медиа: {published_with_media})
+            | Средний confidence: <b>{avg_confidence:.2f}</b>
+        </p>
     """
+
+    # Блок «Медиа» — только если хоть один отзыв с фото
+    if media_total > 0:
+        def _pct(n, total):
+            return f"{n/total*100:.1f}%" if total else "0%"
+
+        html += f"""
+        <h3>📷 Медиа в отзывах</h3>
+        <p>Всего отзывов с медиа: <b>{media_total}</b>.
+        Сами фото/видео на сайт не публикуются — vision помечает категорию письма для модератора.</p>
+        <table>
+            <tr><th>Vision-вердикт</th><th>Кол-во</th><th>% от медиа-отзывов</th></tr>
+            <tr>
+                <td class="approve">✅ фото ок</td>
+                <td><b>{vision_approve}</b></td>
+                <td>{_pct(vision_approve, media_total)}</td>
+            </tr>
+            <tr>
+                <td class="reject">❌ фото отклонено (нужна ручная чистка в CMS)</td>
+                <td><b>{vision_reject}</b></td>
+                <td>{_pct(vision_reject, media_total)}</td>
+            </tr>
+            <tr>
+                <td class="manual">⚠️ фото на ручную проверку</td>
+                <td><b>{vision_manual}</b></td>
+                <td>{_pct(vision_manual, media_total)}</td>
+            </tr>
+        </table>
+        """
+
+    # Таблица: медиа, которые vision отклонил — требуют ручной чистки в CMS
+    vision_rejects = [
+        r for r in records
+        if (r.get("vision") or {}).get("decision") == "reject"
+    ]
+    if vision_rejects:
+        html += """
+        <h3>❌ Медиа требуют ручной чистки в CMS</h3>
+        <p><i>Текст отзыва опубликован, но фото отклонены vision — зайти в CMS и удалить неуместные фото.</i></p>
+        <table>
+            <tr><th>Автор</th><th>Фото</th><th>Confidence</th><th>Причина</th><th>Товар</th></tr>
+        """
+        for r in vision_rejects:
+            v = r.get("vision") or {}
+            name = r.get("name", "—")
+            media_count = r.get("media_count", 0)
+            v_conf = v.get("confidence", 0.0)
+            v_reason = v.get("reason", "—")
+            product = r.get("link_product", "")
+            product_short = product[:60] + "..." if len(product) > 60 else product
+            html += (
+                f"<tr>"
+                f"<td>{name}</td>"
+                f"<td>{media_count}</td>"
+                f"<td>{int(v_conf*100)}%</td>"
+                f"<td>{v_reason}</td>"
+                f'<td><a href="{product}">{product_short}</a></td>'
+                f"</tr>"
+            )
+        html += "</table>"
 
     # Причины отклонения
     if reject_reasons:
