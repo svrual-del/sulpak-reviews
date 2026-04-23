@@ -1,0 +1,132 @@
+
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; color: #333; }
+            h2 { color: #1a1a1a; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; }
+            h3 { color: #555; margin-top: 25px; }
+            table { border-collapse: collapse; margin: 10px 0; }
+            th, td { border: 1px solid #ddd; padding: 8px 16px; text-align: left; }
+            th { background-color: #f5f5f5; font-weight: bold; }
+            .approve { color: #2e7d32; font-weight: bold; }
+            .reject { color: #c62828; font-weight: bold; }
+            .manual { color: #f57f17; font-weight: bold; }
+            .summary { background-color: #f9f9f9; padding: 15px; border-radius: 8px; margin: 15px 0; }
+            .footer { color: #999; font-size: 12px; margin-top: 30px; }
+        </style>
+    </head>
+    <body>
+        <h2>Модерация отзывов Sulpak — 20260422</h2>
+
+        <div class="summary">
+            <table>
+                <tr>
+                    <th>Решение</th>
+                    <th>Кол-во</th>
+                    <th>%</th>
+                </tr>
+                <tr>
+                    <td class="approve">✅ Одобрено (approve)</td>
+                    <td><b>3</b></td>
+                    <td>75.0%</td>
+                </tr>
+                <tr>
+                    <td class="reject">❌ Отклонено (reject)</td>
+                    <td><b>1</b></td>
+                    <td>25.0%</td>
+                </tr>
+                <tr>
+                    <td class="manual">⚠️ На проверку (manual_review)</td>
+                    <td><b>0</b></td>
+                    <td>0.0%</td>
+                </tr>
+                <tr style="border-top: 2px solid #333;">
+                    <td><b>Всего обработано</b></td>
+                    <td><b>4</b></td>
+                    <td>100%</td>
+                </tr>
+            </table>
+        </div>
+
+        <p>
+            📤 Опубликовано автоматически: <b>3</b>
+            (без медиа: 1, с медиа: 2)
+            | Средний confidence: <b>0.92</b>
+        </p>
+    
+        <h3>📷 Медиа в отзывах</h3>
+        <p>Всего отзывов с медиа: <b>2</b>.
+        Сами фото/видео на сайт не публикуются — vision помечает категорию письма для модератора.</p>
+        <table>
+            <tr><th>Vision-вердикт</th><th>Кол-во</th><th>% от медиа-отзывов</th></tr>
+            <tr>
+                <td class="approve">✅ фото ок</td>
+                <td><b>1</b></td>
+                <td>50.0%</td>
+            </tr>
+            <tr>
+                <td class="reject">❌ фото отклонено (нужна ручная чистка в CMS)</td>
+                <td><b>1</b></td>
+                <td>50.0%</td>
+            </tr>
+            <tr>
+                <td class="manual">⚠️ фото на ручную проверку</td>
+                <td><b>0</b></td>
+                <td>0.0%</td>
+            </tr>
+        </table>
+        
+        <h3>❌ Медиа требуют ручной чистки в CMS</h3>
+        <p><i>Текст отзыва опубликован, но фото отклонены vision — зайти в CMS и удалить неуместные фото.</i></p>
+        <table>
+            <tr><th>Автор</th><th>Фото</th><th>Confidence</th><th>Причина</th><th>Товар</th></tr>
+        <tr><td>Дмитрий</td><td>2</td><td>92%</td><td>На первом фото кот на подоконнике, на втором — чек из магазина с персональными данными. Товара нет.</td><td><a href="https://sulpak.kz/g/toster-bosch-abc/">https://sulpak.kz/g/toster-bosch-abc/</a></td></tr></table>
+        <h3>💰 Стоимость Claude API</h3>
+        <table>
+            <tr>
+                <th>Вызов</th>
+                <th>Input токены</th>
+                <th>Output токены</th>
+                <th>Стоимость, USD</th>
+            </tr>
+            <tr>
+                <td>Текст (модерация отзыва)</td>
+                <td>1,991</td>
+                <td>364</td>
+                <td>$0.0114</td>
+            </tr>
+            <tr>
+                <td>Vision (проверка фото)</td>
+                <td>7,300</td>
+                <td>455</td>
+                <td>$0.0287</td>
+            </tr>
+            <tr style="border-top: 2px solid #333;">
+                <td><b>Итого за день</b></td>
+                <td><b>9,291</b></td>
+                <td><b>819</b></td>
+                <td><b>$0.0402</b></td>
+            </tr>
+        </table>
+        <p style="color:#666;font-size:13px;">
+            Средняя стоимость одного отзыва: <b>$0.0100</b>
+            (≈ 4.52 ₸ по курсу 450)<br>
+            Цены Claude Sonnet 4: input $3.00/1M, output $15.00/1M токенов.
+        </p>
+        
+        <h3>Причины отклонения</h3>
+        <table>
+            <tr><th>Причина</th><th>Кол-во</th></tr>
+        <tr><td>Отзыв о сервисе</td><td>1</td></tr></table>
+        <h3>❌ Отклонённые отзывы</h3>
+        <table>
+            <tr><th>Автор</th><th>Причина</th><th>Текст</th></tr>
+        <tr><td>Анонимный</td><td>Отзыв о сервисе и доставке, о самом товаре ничего не сказано.</td><td>доставка задержалась на неделю, менеджер хамит, вернули день...</td></tr></table>
+        <p class="footer">
+            Автоматический отчёт модерации отзывов Sulpak<br>
+            Сгенерировано: 23.04.2026 12:59
+        </p>
+    </body>
+    </html>
+    

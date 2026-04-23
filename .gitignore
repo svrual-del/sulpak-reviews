@@ -4,3 +4,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Разрешаем sample-файлы в документации
+!docs/sample_log.jsonl
