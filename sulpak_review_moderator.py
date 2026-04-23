@@ -254,8 +254,24 @@ def parse_review_email(item) -> Review:
 # МОДЕРАЦИЯ ЧЕРЕЗ CLAUDE API
 # ============================================================
 
+def _extract_usage(response) -> dict:
+    """Вытаскивает токены из ответа API в сериализуемый dict."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return {}
+    return {
+        "input_tokens": getattr(u, "input_tokens", 0) or 0,
+        "output_tokens": getattr(u, "output_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+    }
+
+
 def moderate_review(review: Review) -> dict:
-    """Отправляет отзыв в Claude API и получает решение."""
+    """Отправляет отзыв в Claude API и получает решение.
+
+    В результат добавляется поле "_usage" с токенами для подсчёта затрат.
+    """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     review_text = f"""Имя: {review.name}
@@ -282,7 +298,9 @@ def moderate_review(review: Review) -> dict:
             response_text = response_text.split("\n", 1)[1]
             response_text = response_text.rsplit("```", 1)[0]
 
-        return json.loads(response_text)
+        result = json.loads(response_text)
+        result["_usage"] = _extract_usage(response)
+        return result
 
     except json.JSONDecodeError as e:
         log.error(f"Ошибка парсинга JSON от Claude: {e}")
@@ -396,6 +414,7 @@ def moderate_media(review: Review) -> dict:
         result = json.loads(text)
         result["checked_count"] = len(image_urls)
         result["skipped_urls"] = skipped
+        result["_usage"] = _extract_usage(response)
         return result
 
     except json.JSONDecodeError as e:
@@ -447,6 +466,9 @@ def publish_review(review: Review) -> bool:
 
 def log_result(review: Review, moderation: dict, published: bool, vision: dict = None):
     """Записывает результат в JSONL-файл."""
+    text_usage = moderation.get("_usage") or {}
+    vision_usage = (vision or {}).get("_usage") or {}
+
     record = {
         "timestamp": datetime.now().isoformat(),
         "name": review.name,
@@ -464,6 +486,10 @@ def log_result(review: Review, moderation: dict, published: bool, vision: dict =
         "media_count": len(review.media_urls),
         "media_urls": review.media_urls,
         "vision": vision,   # None, если не проверяли; иначе {decision, confidence, reason, per_image, ...}
+        "usage": {          # токены Claude API для подсчёта затрат
+            "text": text_usage,
+            "vision": vision_usage,
+        },
         "link_publish": review.link_publish,
         "link_product": review.link_product
     }
@@ -618,20 +644,20 @@ def process_new_reviews():
             published = False
             vision_result = None
 
+            # Vision-проверка медиа — всегда, если текст approve и есть фото.
+            # Не зависит от AUTO_PUBLISH: аннотация нужна модератору в любом режиме.
+            if decision == "approve" and review.has_media:
+                log.info("📷 Запускаю vision-проверку медиа...")
+                vision_result = moderate_media(review)
+                v_dec = vision_result.get("decision")
+                v_conf = vision_result.get("confidence", 0.0)
+                log.info(f"📷 Vision: {v_dec} (confidence={v_conf:.2f})")
+                log.info(f"📷 Причина: {vision_result.get('reason', '')}")
+
             if AUTO_PUBLISH:
                 if decision == "approve" and confidence >= CONFIDENCE_THRESHOLD:
-                    # Публикуем текст в любом случае — прошёл текстовую проверку
+                    # Публикуем текст — прошёл текстовую проверку
                     published = publish_review(review)
-
-                    # При наличии медиа — vision-аннотация (без публикации медиа)
-                    if review.has_media and published:
-                        log.info("📷 Запускаю vision-проверку медиа...")
-                        vision_result = moderate_media(review)
-                        v_dec = vision_result.get("decision")
-                        v_conf = vision_result.get("confidence", 0.0)
-                        log.info(f"📷 Vision: {v_dec} (confidence={v_conf:.2f})")
-                        log.info(f"📷 Причина: {vision_result.get('reason', '')}")
-
                     mark_email(item, moderation, has_media=review.has_media,
                                published=published, vision=vision_result)
                 elif decision == "reject":
@@ -644,7 +670,8 @@ def process_new_reviews():
                 # Режим помощника — помечаем категорией, не публикуем
                 emoji = {"approve": "✅", "reject": "❌", "manual_review": "⚠️"}
                 log.info(f"{emoji.get(decision, '?')} Рекомендация: {decision}")
-                mark_email(item, moderation, has_media=review.has_media, published=False)
+                mark_email(item, moderation, has_media=review.has_media,
+                           published=False, vision=vision_result)
 
             # Логируем результат
             log_result(review, moderation, published, vision=vision_result)

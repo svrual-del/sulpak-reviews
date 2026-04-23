@@ -31,6 +31,30 @@ log = logging.getLogger("daily_report")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
+# Цены Claude Sonnet 4 (USD за 1M токенов)
+PRICE_INPUT_PER_M = 3.0
+PRICE_OUTPUT_PER_M = 15.0
+PRICE_CACHE_READ_PER_M = 0.30
+PRICE_CACHE_WRITE_PER_M = 3.75
+
+
+def _usage_cost(usage: dict) -> tuple[int, int, float]:
+    """Возвращает (input_tokens, output_tokens, cost_usd) для одного usage-dict."""
+    if not usage:
+        return 0, 0, 0.0
+    inp = usage.get("input_tokens", 0) or 0
+    out = usage.get("output_tokens", 0) or 0
+    cache_read = usage.get("cache_read_input_tokens", 0) or 0
+    cache_write = usage.get("cache_creation_input_tokens", 0) or 0
+    cost = (
+        inp * PRICE_INPUT_PER_M / 1_000_000
+        + out * PRICE_OUTPUT_PER_M / 1_000_000
+        + cache_read * PRICE_CACHE_READ_PER_M / 1_000_000
+        + cache_write * PRICE_CACHE_WRITE_PER_M / 1_000_000
+    )
+    return inp, out, cost
+
+
 def load_daily_log(date_str: str) -> list:
     """Читает JSONL-лог за указанную дату."""
     log_file = os.path.join(_script_dir, f"moderation_log_{date_str}.jsonl")
@@ -88,6 +112,20 @@ def build_html_report(records: list, date_str: str) -> str:
     # Средний confidence
     confidences = [r.get("confidence", 0) for r in records if r.get("confidence")]
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+    # Стоимость API: раздельно текст и vision
+    text_in = text_out = 0
+    text_cost = 0.0
+    vision_in = vision_out = 0
+    vision_cost = 0.0
+    for r in records:
+        usage = r.get("usage") or {}
+        i, o, c = _usage_cost(usage.get("text"))
+        text_in += i; text_out += o; text_cost += c
+        i, o, c = _usage_cost(usage.get("vision"))
+        vision_in += i; vision_out += o; vision_cost += c
+    total_cost = text_cost + vision_cost
+    has_cost_data = (text_in + text_out + vision_in + vision_out) > 0
 
     # Формируем HTML
     html = f"""
@@ -207,6 +245,44 @@ def build_html_report(records: list, date_str: str) -> str:
                 f"</tr>"
             )
         html += "</table>"
+
+    # Блок: стоимость API
+    if has_cost_data:
+        avg_per_review = total_cost / total if total else 0.0
+        html += f"""
+        <h3>💰 Стоимость Claude API</h3>
+        <table>
+            <tr>
+                <th>Вызов</th>
+                <th>Input токены</th>
+                <th>Output токены</th>
+                <th>Стоимость, USD</th>
+            </tr>
+            <tr>
+                <td>Текст (модерация отзыва)</td>
+                <td>{text_in:,}</td>
+                <td>{text_out:,}</td>
+                <td>${text_cost:.4f}</td>
+            </tr>
+            <tr>
+                <td>Vision (проверка фото)</td>
+                <td>{vision_in:,}</td>
+                <td>{vision_out:,}</td>
+                <td>${vision_cost:.4f}</td>
+            </tr>
+            <tr style="border-top: 2px solid #333;">
+                <td><b>Итого за день</b></td>
+                <td><b>{text_in + vision_in:,}</b></td>
+                <td><b>{text_out + vision_out:,}</b></td>
+                <td><b>${total_cost:.4f}</b></td>
+            </tr>
+        </table>
+        <p style="color:#666;font-size:13px;">
+            Средняя стоимость одного отзыва: <b>${avg_per_review:.4f}</b>
+            (≈ {avg_per_review * 450:.2f} ₸ по курсу 450)<br>
+            Цены Claude Sonnet 4: input ${PRICE_INPUT_PER_M:.2f}/1M, output ${PRICE_OUTPUT_PER_M:.2f}/1M токенов.
+        </p>
+        """
 
     # Причины отклонения
     if reject_reasons:
