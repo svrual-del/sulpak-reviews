@@ -241,12 +241,28 @@ py daily_report.py 20260313
 
 ## Расписание (Windows Task Scheduler)
 
-| Задание | Расписание | Описание |
-|---------|-----------|----------|
-| `SulpakReviewModeration` | Каждые 2 часа с 9:00 | Обработка новых отзывов |
-| `SulpakDailyReport` | Ежедневно в 19:00 | Сводка за день на email |
+| Задание | Расписание | Команда |
+|---------|-----------|---------|
+| `SulpakReviewModeration` | Каждые 2 часа с 9:00 | `run.cmd` |
+| `SulpakDailyReport` | Ежедневно в 19:00 | `run_report.cmd` |
 
-### Управление
+`run.cmd` и `run_report.cmd` — обёртки в корне репозитория. Перед запуском Python-скрипта они **сами делают `git pull --ff-only`** и тянут свежий код с GitHub. Если pull падает (нет интернета, локальные правки) — запускается старая версия, ничего не ломается. Лог пуллов: `git_pull.log`.
+
+### Перенацелить существующие задания на .cmd
+
+Если задания в Task Scheduler ещё запускают `py sulpak_review_moderator.py` напрямую — поменять команду:
+
+```cmd
+:: Модерация
+schtasks /change /tn "SulpakReviewModeration" /tr "C:\projects\sulpak-reviews\run.cmd"
+
+:: Отчёт
+schtasks /change /tn "SulpakDailyReport" /tr "C:\projects\sulpak-reviews\run_report.cmd"
+```
+
+Путь поправить под фактическое расположение репозитория. После этого все следующие запуски будут с актуальным кодом из GitHub.
+
+### Управление вручную
 
 ```cmd
 :: Запустить модерацию вручную
@@ -255,7 +271,10 @@ schtasks /run /tn "SulpakReviewModeration"
 :: Запустить отчёт вручную
 schtasks /run /tn "SulpakDailyReport"
 
-:: Посмотреть статус
+:: Запустить отчёт за конкретную дату (без Task Scheduler)
+run_report.cmd 20260422
+
+:: Посмотреть статус заданий
 schtasks /query /tn "SulpakReviewModeration"
 schtasks /query /tn "SulpakDailyReport"
 ```
